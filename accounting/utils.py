@@ -6,6 +6,17 @@ from dateutil.relativedelta import relativedelta
 from accounting import db
 from models import Contact, Invoice, Payment, Policy
 
+import logging
+logging.basicConfig(level=logging.DEBUG)
+
+
+logger = logging.getLogger(__name__)
+
+handler = logging.FileHandler('accounting.log')
+format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+handler.setFormatter(format)
+logger.addHandler(handler)
+
 """
 #######################################################
 This is the base code for the engineer project.
@@ -18,6 +29,8 @@ class PolicyAccounting(object):
     """
     def __init__(self, policy_id):
         self.policy = Policy.query.filter_by(id=policy_id).one()
+        self.billing_schedules = {'Annual': 1, 'Two-Pay': 2, 'Quarterly': 4, 'Monthly': 12}
+        self.scheduling_interval = {'Annual': 1,'Two-Pay': 6, 'Quarterly': 3, 'Monthly': 1}
 
         if not self.policy.invoices:
             self.make_invoices()
@@ -26,20 +39,31 @@ class PolicyAccounting(object):
         if not date_cursor:
             date_cursor = datetime.now().date()
 
+        # get the list of invoices for this policy up to the date passed in
         invoices = Invoice.query.filter_by(policy_id=self.policy.id)\
                                 .filter(Invoice.bill_date <= date_cursor)\
                                 .order_by(Invoice.bill_date)\
                                 .all()
+
+        # calculate the amount due for this policy up to the date passed in
         due_now = 0
         for invoice in invoices:
             due_now += invoice.amount_due
 
+        logger.debug("Invoices up to date %s: %d",date_cursor, len(invoices))
+        logger.debug("Amount due: %d", due_now)
+        # get the list of payments made on this policy up to the date passed in
         payments = Payment.query.filter_by(policy_id=self.policy.id)\
                                 .filter(Payment.transaction_date <= date_cursor)\
                                 .all()
+
+        # remove the amount already paid from the amount due
         for payment in payments:
+            logger.debug("Found payment of: %d", payment.amount_paid)
             due_now -= payment.amount_paid
 
+        logger.debug("Amount due: %d", due_now)
+        # return the amount due for this policy
         return due_now
 
     def make_payment(self, contact_id=None, date_cursor=None, amount=0):
@@ -52,6 +76,7 @@ class PolicyAccounting(object):
             except:
                 db.session.rollback()
 
+        # create payment for this policy
         payment = Payment(self.policy.id,
                           contact_id,
                           amount,
@@ -59,6 +84,7 @@ class PolicyAccounting(object):
         db.session.add(payment)
         db.session.commit()
 
+        logger.debug("Created payment => policy: %s / contact_id: %s / amount %d / date: %s", self.policy.id, contact_id, amount, date_cursor)
         return payment
 
     def evaluate_cancellation_pending_due_to_non_pay(self, date_cursor=None):
@@ -74,11 +100,13 @@ class PolicyAccounting(object):
         if not date_cursor:
             date_cursor = datetime.now().date()
 
+        # gets all the invoices with the cancel date up to the date passed in
         invoices = Invoice.query.filter_by(policy_id=self.policy.id)\
                                 .filter(Invoice.cancel_date <= date_cursor)\
                                 .order_by(Invoice.bill_date)\
                                 .all()
 
+        # if there is any amount left to pay, tell that the policy should be canceled
         for invoice in invoices:
             if not self.return_account_balance(invoice.cancel_date):
                 continue
@@ -88,56 +116,34 @@ class PolicyAccounting(object):
         else:
             print "THIS POLICY SHOULD NOT CANCEL"
 
-
     def make_invoices(self):
         for invoice in self.policy.invoices:
             invoice.delete()
 
-        billing_schedules = {'Annual': None, 'Semi-Annual': 6, 'Quarterly': 4, 'Monthly': 12}
-
         invoices = []
-        first_invoice = Invoice(self.policy.id,
-                                self.policy.effective_date, #bill_date
-                                self.policy.effective_date + relativedelta(months=1), #due
-                                self.policy.effective_date + relativedelta(months=1, days=14), #cancel
-                                self.policy.annual_premium)
-        invoices.append(first_invoice)
 
-        if self.policy.billing_schedule == "Annual":
+        if self.policy.billing_schedule in self.scheduling_interval:
+            for i in range(0, self.billing_schedules.get(self.policy.billing_schedule)):
+                months_after_eff_date = i * self.scheduling_interval[self.policy.billing_schedule]
+                bill_date = self.policy.effective_date + relativedelta(months=months_after_eff_date)
+
+                logger.debug(
+                    "Creating [%s] Invoice => policy_id: %s / bill_date: %s / due_date: %s / cancel_date: %s / amount_due: %s",
+                    self.policy.billing_schedule,
+                    self.policy.id,
+                    bill_date,
+                    bill_date + relativedelta(months=1),
+                    bill_date + relativedelta(months=1, days=14),
+                    self.policy.annual_premium / self.billing_schedules.get(self.policy.billing_schedule))
+
+                invoice = Invoice(self.policy.id,
+                                  bill_date,
+                                  bill_date + relativedelta(months=1),
+                                  bill_date + relativedelta(months=1, days=14),
+                                  self.policy.annual_premium / self.billing_schedules.get(self.policy.billing_schedule))
+                invoices.append(invoice)
+        elif self.policy.billing_schedule == "Annual":
             pass
-        elif self.policy.billing_schedule == "Two-Pay":
-            first_invoice.amount_due = first_invoice.amount_due / billing_schedules.get(self.policy.billing_schedule)
-            for i in range(1, billing_schedules.get(self.policy.billing_schedule)):
-                months_after_eff_date = i*6
-                bill_date = self.policy.effective_date + relativedelta(months=months_after_eff_date)
-                invoice = Invoice(self.policy.id,
-                                  bill_date,
-                                  bill_date + relativedelta(months=1),
-                                  bill_date + relativedelta(months=1, days=14),
-                                  self.policy.annual_premium / billing_schedules.get(self.policy.billing_schedule))
-                invoices.append(invoice)
-        elif self.policy.billing_schedule == "Quarterly":
-            first_invoice.amount_due = first_invoice.amount_due / billing_schedules.get(self.policy.billing_schedule)
-            for i in range(1, billing_schedules.get(self.policy.billing_schedule)):
-                months_after_eff_date = i*3
-                bill_date = self.policy.effective_date + relativedelta(months=months_after_eff_date)
-                invoice = Invoice(self.policy.id,
-                                  bill_date,
-                                  bill_date + relativedelta(months=1),
-                                  bill_date + relativedelta(months=1, days=14),
-                                  self.policy.annual_premium / billing_schedules.get(self.policy.billing_schedule))
-                invoices.append(invoice)
-        elif self.policy.billing_schedule == "Monthly":
-            first_invoice.amount_due = first_invoice.amount_due / billing_schedules.get(self.policy.billing_schedule)
-            for i in range(1, billing_schedules.get(self.policy.billing_schedule)):
-                months_after_eff_date = i
-                bill_date = self.policy.effective_date + relativedelta(months=months_after_eff_date)
-                invoice = Invoice(self.policy.id,
-                                  bill_date,
-                                  bill_date + relativedelta(months=1),
-                                  bill_date + relativedelta(months=1, days=14),
-                                  self.policy.annual_premium / billing_schedules.get(self.policy.billing_schedule))
-                invoices.append(invoice)
         else:
             print "You have chosen a bad billing schedule."
 

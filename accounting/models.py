@@ -22,6 +22,7 @@ class Policy(db.Model):
         self.policy_number = policy_number
         self.effective_date = effective_date
         self.annual_premium = annual_premium
+        self.monthly_premium = annual_premium / 12
 
     invoices = db.relation('Invoice', primaryjoin="Invoice.policy_id==Policy.id")
 
