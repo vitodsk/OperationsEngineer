@@ -94,7 +94,13 @@ class PolicyAccounting(object):
          being paid in full. However, it has not necessarily
          made it to the cancel_date yet.
         """
-        pass
+        if not date_cursor:
+            date_cursor = datetime.now().date()
+
+        if self.evaluate_cancel(date_cursor):
+            return True
+
+        return False
 
     def evaluate_cancel(self, date_cursor=None):
         if not date_cursor:
@@ -112,9 +118,11 @@ class PolicyAccounting(object):
                 continue
             else:
                 print "THIS POLICY SHOULD HAVE CANCELED"
-                break
+                return True
         else:
             print "THIS POLICY SHOULD NOT CANCEL"
+            return False
+
 
     def make_invoices(self):
         for invoice in self.policy.invoices:

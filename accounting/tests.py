@@ -3,6 +3,7 @@
 import unittest
 from datetime import date, datetime
 from dateutil.relativedelta import relativedelta
+from mock import MagicMock
 from accounting import db
 from models import Contact, Invoice, Payment, Policy
 from utils import PolicyAccounting
@@ -12,6 +13,7 @@ from utils import PolicyAccounting
 Test Suite for Accounting
 #######################################################
 """
+
 
 class TestBillingSchedules(unittest.TestCase):
 
@@ -46,9 +48,9 @@ class TestBillingSchedules(unittest.TestCase):
 
     def test_annual_billing_schedule(self):
         self.policy.billing_schedule = "Annual"
-        #No invoices currently exist
+        # No invoices currently exist
         self.assertFalse(self.policy.invoices)
-        #Invoices should be made when the class is initiated
+        # Invoices should be made when the class is initiated
         pa = PolicyAccounting(self.policy.id)
         self.assertEquals(len(self.policy.invoices), 1)
         self.assertEquals(self.policy.invoices[0].amount_due, self.policy.annual_premium)
@@ -58,7 +60,7 @@ class TestBillingSchedules(unittest.TestCase):
         self.assertFalse(self.policy.invoices)
         pa = PolicyAccounting(self.policy.id)
         self.assertEquals(len(self.policy.invoices), 12)
-        self.assertEquals(self.policy.invoices[0].amount_due, self.policy.annual_premium/12)
+        self.assertEquals(self.policy.invoices[0].amount_due, self.policy.annual_premium / 12)
 
 
 class TestReturnAccountBalance(unittest.TestCase):
@@ -107,18 +109,19 @@ class TestReturnAccountBalance(unittest.TestCase):
     def test_quarterly_on_last_installment_bill_date(self):
         self.policy.billing_schedule = "Quarterly"
         pa = PolicyAccounting(self.policy.id)
-        invoices = Invoice.query.filter_by(policy_id=self.policy.id)\
-                                .order_by(Invoice.bill_date).all()
+        invoices = Invoice.query.filter_by(policy_id=self.policy.id) \
+            .order_by(Invoice.bill_date).all()
         self.assertEquals(pa.return_account_balance(date_cursor=invoices[3].bill_date), 1200)
 
     def test_quarterly_on_second_installment_bill_date_with_full_payment(self):
         self.policy.billing_schedule = "Quarterly"
         pa = PolicyAccounting(self.policy.id)
-        invoices = Invoice.query.filter_by(policy_id=self.policy.id)\
-                                .order_by(Invoice.bill_date).all()
+        invoices = Invoice.query.filter_by(policy_id=self.policy.id) \
+            .order_by(Invoice.bill_date).all()
         self.payments.append(pa.make_payment(contact_id=self.policy.named_insured,
                                              date_cursor=invoices[1].bill_date, amount=600))
         self.assertEquals(pa.return_account_balance(date_cursor=invoices[1].bill_date), 0)
+
 
 class TestCancellationPolicies(unittest.TestCase):
     @classmethod
@@ -162,7 +165,9 @@ class TestCancellationPolicies(unittest.TestCase):
 
         # evaluation date it's 10 days after due_date
         evaluation_date = invoices[1].due_date + relativedelta(days=10)
+        pa.evaluate_cancel = MagicMock(side_effect=pa.evaluate_cancel)
         result = pa.evaluate_cancellation_pending_due_to_non_pay(date_cursor=evaluation_date)
+        pa.evaluate_cancel.assert_called_with(evaluation_date)
         self.assertIsNotNone(result)
         self.assertFalse(result)
 
@@ -174,8 +179,10 @@ class TestCancellationPolicies(unittest.TestCase):
                                              date_cursor=invoices[0].bill_date, amount=400))
 
         # evaluation date it's 20 days after due_date
+        pa.evaluate_cancel = MagicMock(side_effect=pa.evaluate_cancel)
         evaluation_date = invoices[1].due_date + relativedelta(days=20)
         result = pa.evaluate_cancellation_pending_due_to_non_pay(date_cursor=evaluation_date)
+        pa.evaluate_cancel.assert_called_with(evaluation_date)
         self.assertIsNotNone(result)
         self.assertTrue(result)
 
@@ -188,9 +195,11 @@ class TestCancellationPolicies(unittest.TestCase):
 
         # the policy has been paid 8 days after due date
         self.payments.append(pa.make_payment(contact_id=self.policy.named_insured,
-                                             date_cursor=invoices[1].due_date+relativedelta(days=8), amount=400))
+                                             date_cursor=invoices[1].due_date + relativedelta(days=8), amount=400))
 
+        pa.evaluate_cancel = MagicMock(side_effect=pa.evaluate_cancel)
         evaluation_date = invoices[1].due_date + relativedelta(days=20)
         result = pa.evaluate_cancellation_pending_due_to_non_pay(date_cursor=evaluation_date)
+        pa.evaluate_cancel.assert_called_with(evaluation_date)
         self.assertIsNotNone(result)
         self.assertFalse(result)
