@@ -3,7 +3,6 @@
 import unittest
 from datetime import date, datetime
 from dateutil.relativedelta import relativedelta
-
 from accounting import db
 from models import Contact, Invoice, Payment, Policy
 from utils import PolicyAccounting
@@ -120,3 +119,78 @@ class TestReturnAccountBalance(unittest.TestCase):
         self.payments.append(pa.make_payment(contact_id=self.policy.named_insured,
                                              date_cursor=invoices[1].bill_date, amount=600))
         self.assertEquals(pa.return_account_balance(date_cursor=invoices[1].bill_date), 0)
+
+class TestCancellationPolicies(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.test_agent = Contact('Test Agent', 'Agent')
+        cls.test_insured = Contact('Test Insured', 'Named Insured')
+        db.session.add(cls.test_agent)
+        db.session.add(cls.test_insured)
+        db.session.commit()
+
+        cls.policy = Policy('Test Policy', date(2015, 1, 1), 1600)
+        cls.policy.named_insured = cls.test_insured.id
+        cls.policy.agent = cls.test_agent.id
+        cls.policy.billing_schedule = "Quarterly"
+        db.session.add(cls.policy)
+        db.session.commit()
+
+    @classmethod
+    def tearDownClass(cls):
+        db.session.delete(cls.test_insured)
+        db.session.delete(cls.test_agent)
+        db.session.delete(cls.policy)
+        db.session.commit()
+
+    def setUp(self):
+        self.payments = []
+
+    def tearDown(self):
+        for invoice in self.policy.invoices:
+            db.session.delete(invoice)
+        for payment in self.payments:
+            db.session.delete(payment)
+        db.session.commit()
+
+    def test_Given_unpaid_policy_When_cancellation_pending_before_cancel_date_Then_not_due_to_cancel(self):
+        pa = PolicyAccounting(self.policy.id)
+        invoices = Invoice.query.filter_by(policy_id=self.policy.id).order_by(Invoice.bill_date).all()
+        self.payments.append(pa.make_payment(contact_id=self.policy.named_insured,
+                                             date_cursor=invoices[0].bill_date,
+                                             amount=400))
+
+        # evaluation date it's 10 days after due_date
+        evaluation_date = invoices[1].due_date + relativedelta(days=10)
+        result = pa.evaluate_cancellation_pending_due_to_non_pay(date_cursor=evaluation_date)
+        self.assertIsNotNone(result)
+        self.assertFalse(result)
+
+    def test_Given_unpaid_policy_When_cancellation_pending_past_cancel_date_Then_due_to_cancel(self):
+        pa = PolicyAccounting(self.policy.id)
+        invoices = Invoice.query.filter_by(policy_id=self.policy.id) \
+            .order_by(Invoice.bill_date).all()
+        self.payments.append(pa.make_payment(contact_id=self.policy.named_insured,
+                                             date_cursor=invoices[0].bill_date, amount=400))
+
+        # evaluation date it's 20 days after due_date
+        evaluation_date = invoices[1].due_date + relativedelta(days=20)
+        result = pa.evaluate_cancellation_pending_due_to_non_pay(date_cursor=evaluation_date)
+        self.assertIsNotNone(result)
+        self.assertTrue(result)
+
+    def test_Given_paid_policy_after_bill_date_When_paid_before_cancel_date_Then_not_due_to_cancel(self):
+        pa = PolicyAccounting(self.policy.id)
+        invoices = Invoice.query.filter_by(policy_id=self.policy.id) \
+            .order_by(Invoice.bill_date).all()
+        self.payments.append(pa.make_payment(contact_id=self.policy.named_insured,
+                                             date_cursor=invoices[0].bill_date, amount=400))
+
+        # the policy has been paid 8 days after due date
+        self.payments.append(pa.make_payment(contact_id=self.policy.named_insured,
+                                             date_cursor=invoices[1].due_date+relativedelta(days=8), amount=400))
+
+        evaluation_date = invoices[1].due_date + relativedelta(days=20)
+        result = pa.evaluate_cancellation_pending_due_to_non_pay(date_cursor=evaluation_date)
+        self.assertIsNotNone(result)
+        self.assertFalse(result)
