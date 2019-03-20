@@ -159,6 +159,9 @@ class PolicyAccounting(object):
             db.session.add(invoice)
         db.session.commit()
 
+    def change_policy(self):
+        pass
+
 ################################
 # The functions below are for the db and 
 # shouldn't need to be edited.

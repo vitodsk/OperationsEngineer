@@ -203,3 +203,70 @@ class TestCancellationPolicies(unittest.TestCase):
         pa.evaluate_cancel.assert_called_with(evaluation_date)
         self.assertIsNotNone(result)
         self.assertFalse(result)
+
+
+class TestChangingPolicy(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.test_agent = Contact('Test Agent', 'Agent')
+        cls.test_insured = Contact('Test Insured', 'Named Insured')
+        db.session.add(cls.test_agent)
+        db.session.add(cls.test_insured)
+        db.session.commit()
+
+        cls.policy = Policy('Original Test Policy', date(2015, 1, 1), 1600)
+        cls.policy.named_insured = cls.test_insured.id
+        cls.policy.agent = cls.test_agent.id
+        cls.policy.billing_schedule = "Quarterly"
+        db.session.add(cls.policy)
+        db.session.commit()
+
+    @classmethod
+    def tearDownClass(cls):
+        db.session.delete(cls.test_insured)
+        db.session.delete(cls.test_agent)
+        db.session.delete(cls.policy)
+        db.session.commit()
+
+    def setUp(self):
+        self.payments = []
+        print(self.test_insured)
+
+    def tearDown(self):
+        for invoice in self.policy.invoices:
+            db.session.delete(invoice)
+        for payment in self.payments:
+            db.session.delete(payment)
+        db.session.commit()
+
+    def test_Given_policy_When_policy_is_changed_Then_old_policy_marked_deleted(self):
+        pa = PolicyAccounting(self.policy.id)
+
+        result = pa.change_policy(billing_schedule="Monthly", date_cursor=date(2015, 3, 1))
+        invoices = Invoice.query.filter_by(policy_id=self.policy.id) \
+            .order_by(Invoice.bill_date).all()
+
+        for invoice in invoices:
+            self.assertTrue(invoice.deleted)
+
+    def test_Given_policy_When_policy_is_changed_Then_invoices_are_added(self):
+        pa = PolicyAccounting(self.policy.id)
+        already_paid_amount = 400
+        self.payments.append(pa.make_payment(contact_id=self.policy.named_insured,
+                                             date_cursor=date(2015, 1, 1), amount=already_paid_amount))
+
+        result = pa.change_policy(billing_schedule="Monthly", date_cursor=date(2015, 3, 1))
+
+        invoices = Invoice.query.filter_by(policy_id=self.policy.id).order_by(Invoice.bill_date).all()
+
+        for invoice in invoices:
+            self.assertEqual((self.policy.annual_premium - already_paid_amount) / 8, invoice.amount_due)
+        self.assertEqual(8, len(invoices))
+
+    def test_Given_policy_When_policy_is_changed_Then_data_is_changed(self):
+        pa = PolicyAccounting(self.policy.id)
+        result = pa.change_policy(billing_schedule="Monthly", date_cursor=date(2015, 3, 1))
+
+        self.assertEqual(self.test_insured.id, result.named_insured)
+        self.assertEqual(self.test_agent.id, result.agent)
+        self.assertEqual("Monthly", self.policy.billing_schedule)
