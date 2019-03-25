@@ -7,8 +7,8 @@ from accounting import db
 from models import Contact, Invoice, Payment, Policy
 
 import logging
-logging.basicConfig(level=logging.DEBUG)
 
+logging.basicConfig(level=logging.DEBUG)
 
 logger = logging.getLogger(__name__)
 
@@ -23,14 +23,16 @@ This is the base code for the engineer project.
 #######################################################
 """
 
+
 class PolicyAccounting(object):
     """
      Each policy has its own instance of accounting.
     """
+
     def __init__(self, policy_id):
         self.policy = Policy.query.filter_by(id=policy_id).one()
         self.billing_schedules = {'Annual': 1, 'Two-Pay': 2, 'Quarterly': 4, 'Monthly': 12}
-        self.scheduling_interval = {'Annual': 1,'Two-Pay': 6, 'Quarterly': 3, 'Monthly': 1}
+        self.scheduling_interval = {'Annual': 1, 'Two-Pay': 6, 'Quarterly': 3, 'Monthly': 1}
 
         if not self.policy.invoices:
             self.make_invoices()
@@ -40,22 +42,22 @@ class PolicyAccounting(object):
             date_cursor = datetime.now().date()
 
         # get the list of invoices for this policy up to the date passed in
-        invoices = Invoice.query.filter_by(policy_id=self.policy.id)\
-                                .filter(Invoice.bill_date <= date_cursor)\
-                                .order_by(Invoice.bill_date)\
-                                .all()
+        invoices = Invoice.query.filter_by(policy_id=self.policy.id) \
+            .filter(Invoice.bill_date <= date_cursor) \
+            .order_by(Invoice.bill_date) \
+            .all()
 
         # calculate the amount due for this policy up to the date passed in
         due_now = 0
         for invoice in invoices:
             due_now += invoice.amount_due
 
-        logger.debug("Invoices up to date %s: %d",date_cursor, len(invoices))
+        logger.debug("Invoices up to %s: %d", date_cursor, len(invoices))
         logger.debug("Amount due: %d", due_now)
         # get the list of payments made on this policy up to the date passed in
-        payments = Payment.query.filter_by(policy_id=self.policy.id)\
-                                .filter(Payment.transaction_date <= date_cursor)\
-                                .all()
+        payments = Payment.query.filter_by(policy_id=self.policy.id) \
+            .filter(Payment.transaction_date <= date_cursor) \
+            .all()
 
         # remove the amount already paid from the amount due
         for payment in payments:
@@ -84,7 +86,8 @@ class PolicyAccounting(object):
         db.session.add(payment)
         db.session.commit()
 
-        logger.debug("Created payment => policy: %s / contact_id: %s / amount %d / date: %s", self.policy.id, contact_id, amount, date_cursor)
+        logger.debug("Created payment => policy: %s / contact_id: %s / amount %d / date: %s", self.policy.id,
+                     contact_id, amount, date_cursor)
         return payment
 
     def evaluate_cancellation_pending_due_to_non_pay(self, date_cursor=None):
@@ -107,10 +110,10 @@ class PolicyAccounting(object):
             date_cursor = datetime.now().date()
 
         # gets all the invoices with the cancel date up to the date passed in
-        invoices = Invoice.query.filter_by(policy_id=self.policy.id)\
-                                .filter(Invoice.cancel_date <= date_cursor)\
-                                .order_by(Invoice.bill_date)\
-                                .all()
+        invoices = Invoice.query.filter_by(policy_id=self.policy.id) \
+            .filter(Invoice.cancel_date <= date_cursor) \
+            .order_by(Invoice.bill_date) \
+            .all()
 
         # if there is any amount left to pay, tell that the policy should be canceled
         for invoice in invoices:
@@ -122,7 +125,6 @@ class PolicyAccounting(object):
         else:
             print "THIS POLICY SHOULD NOT CANCEL"
             return False
-
 
     def make_invoices(self):
         for invoice in self.policy.invoices:
@@ -153,14 +155,78 @@ class PolicyAccounting(object):
         elif self.policy.billing_schedule == "Annual":
             pass
         else:
-            print "You have chosen a bad billing schedule."
+            logger.info("You have chosen a bad billing schedule.")
 
         for invoice in invoices:
             db.session.add(invoice)
         db.session.commit()
 
-    def change_policy(self):
-        pass
+    def change_policy(self, schedule, date_cursor=None):
+        """
+        This changes the policy and the dates accordingly to
+        the new parameters.
+        For semplicity is assumed that the new billing_schedule
+        frequency is always going to be higher than the original one.
+        I choose to not mark deleted the first paid invoice,
+        as it is an official invoice paid for the currently
+        valid policy.
+        """
+        if not date_cursor:
+            date_cursor = datetime.now().date()
+
+        invoices = Invoice.query.filter_by(policy_id=self.policy.id) \
+            .filter(Invoice.bill_date >= date_cursor) \
+            .order_by(Invoice.bill_date) \
+            .all()
+
+        for invoice in invoices:
+            invoice.deleted = True
+        new_effective_date = invoices[0].bill_date
+
+        payments = Payment.query.filter_by(policy_id=self.policy.id) \
+            .filter(Payment.transaction_date <= date_cursor) \
+            .all()
+
+        paid = 0
+        for payment in payments:
+            paid += payment.amount_paid
+
+        annual_premium_left = self.policy.annual_premium - paid
+        proration = self.billing_schedules[schedule] - self.scheduling_interval[self.policy.billing_schedule]
+        invoices_amount = annual_premium_left / proration
+
+        self.policy.billing_schedule = schedule
+        self.policy.effective_date = new_effective_date
+
+        if schedule in self.scheduling_interval:
+            for i in range(0, proration):
+                new_effective_date = new_effective_date + relativedelta(
+                    months=self.scheduling_interval[self.policy.billing_schedule])
+                logger.debug(
+                    "Creating [%s] Invoice => policy_id: %s / bill_date: %s / due_date: %s / cancel_date: %s / amount_due: %s, %d",
+                    self.policy.billing_schedule,
+                    self.policy.id,
+                    new_effective_date,
+                    new_effective_date + relativedelta(months=1),
+                    new_effective_date + relativedelta(months=1, days=14),
+                    invoices_amount, i)
+
+                invoice = Invoice(self.policy.id,
+                                  new_effective_date + relativedelta(months=1),
+                                  new_effective_date + relativedelta(months=1),
+                                  new_effective_date + relativedelta(months=1, days=14),
+                                  invoices_amount)
+                invoices.append(invoice)
+        else:
+            logger.info("You have chosen a bad billing schedule.")
+            db.session.rollback()
+            return
+
+        for invoice in invoices:
+            db.session.add(invoice)
+        db.session.commit()
+        return self.policy
+
 
 ################################
 # The functions below are for the db and 
@@ -172,8 +238,9 @@ def build_or_refresh_db():
     insert_data()
     print "DB Ready!"
 
+
 def insert_data():
-    #Contacts
+    # Contacts
     contacts = []
     john_doe_agent = Contact('John Doe', 'Agent')
     contacts.append(john_doe_agent)
@@ -220,4 +287,3 @@ def insert_data():
     payment_for_p2 = Payment(p2.id, anna_white.id, 400, date(2015, 2, 1))
     db.session.add(payment_for_p2)
     db.session.commit()
-
