@@ -204,6 +204,14 @@ class TestCancellationPolicies(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertFalse(result)
 
+    def test_Given_policy_to_cancel_When_policy_canceled_Then_policy_data_updated(self):
+        pa = PolicyAccounting(self.policy.id)
+        pa.cancel_policy("underwriting")
+        self.assertEqual(pa.policy.status, 'Canceled')
+        self.assertEqual(pa.policy.reason,"underwriting")
+        self.assertEqual(pa.policy.date_changed, datetime.now().date())
+
+
 
 class TestChangingPolicy(unittest.TestCase):
     @classmethod

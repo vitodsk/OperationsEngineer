@@ -227,6 +227,8 @@ class PolicyAccounting(object):
         db.session.commit()
         return self.policy
 
+    def cancel_policy(self,reason):
+        pass
 
 ################################
 # The functions below are for the db and 
