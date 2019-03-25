@@ -126,14 +126,20 @@ class PolicyAccounting(object):
             print "THIS POLICY SHOULD NOT CANCEL"
             return False
 
-    def make_invoices(self):
-        for invoice in self.policy.invoices:
-            invoice.delete()
+    def make_invoices(self, changing=False,proration=0):
+
+        if not changing:
+            for invoice in self.policy.invoices:
+                invoice.delete()
 
         invoices = []
+        invoices_to_create = self.billing_schedules.get(self.policy.billing_schedule)
+
+        if changing:
+            invoices_to_create = proration
 
         if self.policy.billing_schedule in self.scheduling_interval:
-            for i in range(0, self.billing_schedules.get(self.policy.billing_schedule)):
+            for i in range(0, invoices_to_create):
                 months_after_eff_date = i * self.scheduling_interval[self.policy.billing_schedule]
                 bill_date = self.policy.effective_date + relativedelta(months=months_after_eff_date)
 
@@ -155,7 +161,7 @@ class PolicyAccounting(object):
         elif self.policy.billing_schedule == "Annual":
             pass
         else:
-            logger.info("You have chosen a bad billing schedule.")
+            print "You have chosen a bad billing schedule."
 
         for invoice in invoices:
             db.session.add(invoice)
@@ -181,50 +187,14 @@ class PolicyAccounting(object):
 
         for invoice in invoices:
             invoice.deleted = True
+
         new_effective_date = invoices[0].bill_date
-
-        payments = Payment.query.filter_by(policy_id=self.policy.id) \
-            .filter(Payment.transaction_date <= date_cursor) \
-            .all()
-
-        paid = 0
-        for payment in payments:
-            paid += payment.amount_paid
-
-        annual_premium_left = self.policy.annual_premium - paid
         proration = self.billing_schedules[schedule] - self.scheduling_interval[self.policy.billing_schedule]
-        invoices_amount = annual_premium_left / proration
-
         self.policy.billing_schedule = schedule
         self.policy.effective_date = new_effective_date
-
-        if schedule in self.scheduling_interval:
-            for i in range(0, proration):
-                new_effective_date = new_effective_date + relativedelta(
-                    months=self.scheduling_interval[self.policy.billing_schedule])
-                logger.debug(
-                    "Creating [%s] Invoice => policy_id: %s / bill_date: %s / due_date: %s / cancel_date: %s / amount_due: %s, %d",
-                    self.policy.billing_schedule,
-                    self.policy.id,
-                    new_effective_date,
-                    new_effective_date + relativedelta(months=1),
-                    new_effective_date + relativedelta(months=1, days=14),
-                    invoices_amount, i)
-
-                invoice = Invoice(self.policy.id,
-                                  new_effective_date + relativedelta(months=1),
-                                  new_effective_date + relativedelta(months=1),
-                                  new_effective_date + relativedelta(months=1, days=14),
-                                  invoices_amount)
-                invoices.append(invoice)
-        else:
-            logger.info("You have chosen a bad billing schedule.")
-            db.session.rollback()
-            return
-
-        for invoice in invoices:
-            db.session.add(invoice)
         db.session.commit()
+
+        self.make_invoices(True,proration)
         return self.policy
 
     def cancel_policy(self, reason):
