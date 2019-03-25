@@ -250,7 +250,9 @@ class TestChangingPolicy(unittest.TestCase):
     def test_Given_policy_When_policy_is_changed_Then_old_policy_marked_deleted(self):
         self.policy.billing_schedule = 'Quarterly'
         pa = PolicyAccounting(self.policy.id)
+
         result = pa.change_policy(schedule='Monthly', date_cursor=date(2015, 3, 1))
+
         invoices = Invoice.query.filter_by(policy_id=self.policy.id) \
             .filter(Invoice.bill_date < date(2015, 3, 1)) \
             .order_by(Invoice.bill_date).all()

@@ -126,8 +126,7 @@ class PolicyAccounting(object):
             print "THIS POLICY SHOULD NOT CANCEL"
             return False
 
-    def make_invoices(self, changing=False,proration=0):
-
+    def make_invoices(self, changing=False, proration=0):
         if not changing:
             for invoice in self.policy.invoices:
                 invoice.delete()
@@ -136,6 +135,10 @@ class PolicyAccounting(object):
         invoices_to_create = self.billing_schedules.get(self.policy.billing_schedule)
 
         if changing:
+            if proration == 0:
+                logger.error("can't change policy with no invoices emitted")
+                db.session.rollback()
+                return
             invoices_to_create = proration
 
         if self.policy.billing_schedule in self.scheduling_interval:
@@ -161,7 +164,8 @@ class PolicyAccounting(object):
         elif self.policy.billing_schedule == "Annual":
             pass
         else:
-            print "You have chosen a bad billing schedule."
+            logger.info("You have chosen a bad billing schedule.")
+            db.session.rollback()
 
         for invoice in invoices:
             db.session.add(invoice)
@@ -192,9 +196,8 @@ class PolicyAccounting(object):
         proration = self.billing_schedules[schedule] - self.scheduling_interval[self.policy.billing_schedule]
         self.policy.billing_schedule = schedule
         self.policy.effective_date = new_effective_date
-        db.session.commit()
 
-        self.make_invoices(True,proration)
+        self.make_invoices(True, proration)
         return self.policy
 
     def cancel_policy(self, reason):
@@ -202,7 +205,18 @@ class PolicyAccounting(object):
         self.policy.reason = reason
         self.policy.date_changed = datetime.now().date()
         db.session.commit()
+        logger.info("Cancelling Policy: %s", self.policy.id)
         return self.policy
+
+    def get_invoices(self, date_cursor):
+        if not date_cursor:
+            date_cursor = datetime.now().date()
+
+        invoices = Invoice.query.filter_by(policy_id=self.policy.id) \
+            .filter(Invoice.bill_date <= date_cursor) \
+            .order_by(Invoice.bill_date) \
+            .all()
+        return invoices
 
 
 ################################
