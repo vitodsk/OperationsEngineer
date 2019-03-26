@@ -148,6 +148,12 @@ class TestCancellationPolicies(unittest.TestCase):
 
     def setUp(self):
         self.payments = []
+        self.pa = PolicyAccounting(self.policy.id)
+        self.invoices = Invoice.query.filter_by(policy_id=self.policy.id).order_by(Invoice.bill_date).all()
+        self.payments.append(self.pa.make_payment(contact_id=self.policy.named_insured,
+                                                  date_cursor=self.invoices[0].bill_date,
+                                                  amount=400))
+        self.pa.evaluate_cancel = MagicMock(side_effect=self.pa.evaluate_cancel)
 
     def tearDown(self):
         for invoice in self.policy.invoices:
@@ -157,60 +163,46 @@ class TestCancellationPolicies(unittest.TestCase):
         db.session.commit()
 
     def test_Given_unpaid_policy_When_cancellation_pending_before_cancel_date_Then_not_due_to_cancel(self):
-        pa = PolicyAccounting(self.policy.id)
-        invoices = Invoice.query.filter_by(policy_id=self.policy.id).order_by(Invoice.bill_date).all()
-        self.payments.append(pa.make_payment(contact_id=self.policy.named_insured,
-                                             date_cursor=invoices[0].bill_date,
-                                             amount=400))
-
         # evaluation date it's 10 days after due_date
-        evaluation_date = invoices[1].due_date + relativedelta(days=10)
-        pa.evaluate_cancel = MagicMock(side_effect=pa.evaluate_cancel)
-        result = pa.evaluate_cancellation_pending_due_to_non_pay(date_cursor=evaluation_date)
-        pa.evaluate_cancel.assert_called_with(evaluation_date)
+        evaluation_date = self.invoices[1].due_date + relativedelta(days=10)
+
+        result = self.pa.evaluate_cancellation_pending_due_to_non_pay(date_cursor=evaluation_date)
+
+        self.pa.evaluate_cancel.assert_called_with(evaluation_date)
         self.assertIsNotNone(result)
         self.assertFalse(result)
 
     def test_Given_unpaid_policy_When_cancellation_pending_past_cancel_date_Then_due_to_cancel(self):
-        pa = PolicyAccounting(self.policy.id)
-        invoices = Invoice.query.filter_by(policy_id=self.policy.id) \
-            .order_by(Invoice.bill_date).all()
-        self.payments.append(pa.make_payment(contact_id=self.policy.named_insured,
-                                             date_cursor=invoices[0].bill_date, amount=400))
-
         # evaluation date it's 20 days after due_date
-        pa.evaluate_cancel = MagicMock(side_effect=pa.evaluate_cancel)
-        evaluation_date = invoices[1].due_date + relativedelta(days=20)
-        result = pa.evaluate_cancellation_pending_due_to_non_pay(date_cursor=evaluation_date)
-        pa.evaluate_cancel.assert_called_with(evaluation_date)
+        evaluation_date = self.invoices[1].due_date + relativedelta(days=20)
+
+        result = self.pa.evaluate_cancellation_pending_due_to_non_pay(date_cursor=evaluation_date)
+
         self.assertIsNotNone(result)
         self.assertTrue(result)
 
     def test_Given_paid_policy_after_bill_date_When_paid_before_cancel_date_Then_not_due_to_cancel(self):
-        pa = PolicyAccounting(self.policy.id)
-        invoices = Invoice.query.filter_by(policy_id=self.policy.id) \
-            .order_by(Invoice.bill_date).all()
-        self.payments.append(pa.make_payment(contact_id=self.policy.named_insured,
-                                             date_cursor=invoices[0].bill_date, amount=400))
 
         # the policy has been paid 8 days after due date
-        self.payments.append(pa.make_payment(contact_id=self.policy.named_insured,
-                                             date_cursor=invoices[1].due_date + relativedelta(days=8), amount=400))
+        self.payments.append(self.pa.make_payment(contact_id=self.policy.named_insured,
+                                                  date_cursor=self.invoices[1].due_date + relativedelta(days=8),
+                                                  amount=400))
+        evaluation_date = self.invoices[1].due_date + relativedelta(days=20)
 
-        pa.evaluate_cancel = MagicMock(side_effect=pa.evaluate_cancel)
-        evaluation_date = invoices[1].due_date + relativedelta(days=20)
-        result = pa.evaluate_cancellation_pending_due_to_non_pay(date_cursor=evaluation_date)
-        pa.evaluate_cancel.assert_called_with(evaluation_date)
+        result = self.pa.evaluate_cancellation_pending_due_to_non_pay(date_cursor=evaluation_date)
+
+        self.pa.evaluate_cancel.assert_called_with(evaluation_date)
         self.assertIsNotNone(result)
         self.assertFalse(result)
 
     def test_Given_policy_to_cancel_When_policy_canceled_Then_policy_data_updated(self):
         pa = PolicyAccounting(self.policy.id)
-        pa.cancel_policy("underwriting")
-        self.assertEqual(pa.policy.status, 'Canceled')
-        self.assertEqual(pa.policy.reason,"underwriting")
-        self.assertEqual(pa.policy.date_changed, datetime.now().date())
 
+        pa.cancel_policy("underwriting")
+
+        self.assertEqual(pa.policy.status, 'Canceled')
+        self.assertEqual(pa.policy.reason, "underwriting")
+        self.assertEqual(pa.policy.date_changed, datetime.now().date())
 
 
 class TestChangingPolicy(unittest.TestCase):
@@ -239,6 +231,9 @@ class TestChangingPolicy(unittest.TestCase):
 
     def setUp(self):
         self.payments = []
+        self.policy.billing_schedule = 'Quarterly'
+        self.pa = PolicyAccounting(self.policy.id)
+        self.pa.make_invoices = MagicMock(side_effect=self.pa.make_invoices)
 
     def tearDown(self):
         for invoice in self.policy.invoices:
@@ -248,11 +243,9 @@ class TestChangingPolicy(unittest.TestCase):
         db.session.commit()
 
     def test_Given_policy_When_policy_is_changed_Then_old_policy_marked_deleted(self):
-        self.policy.billing_schedule = 'Quarterly'
-        pa = PolicyAccounting(self.policy.id)
+        result = self.pa.change_policy(schedule='Monthly', date_cursor=date(2015, 3, 1))
 
-        result = pa.change_policy(schedule='Monthly', date_cursor=date(2015, 3, 1))
-
+        self.pa.make_invoices.assert_called_with(True, 9)
         invoices = Invoice.query.filter_by(policy_id=self.policy.id) \
             .filter(Invoice.bill_date < date(2015, 3, 1)) \
             .order_by(Invoice.bill_date).all()
@@ -260,22 +253,21 @@ class TestChangingPolicy(unittest.TestCase):
             self.assertTrue(invoice.deleted)
 
     def test_Given_policy_When_policy_is_changed_Then_invoices_are_added(self):
-        self.policy.billing_schedule = 'Quarterly'
-        pa = PolicyAccounting(self.policy.id)
         already_paid_amount = 400
-        self.payments.append(pa.make_payment(contact_id=self.policy.named_insured,
-                                             date_cursor=date(2015, 1, 1), amount=already_paid_amount))
+        self.payments.append(self.pa.make_payment(contact_id=self.policy.named_insured,
+                                                  date_cursor=date(2015, 1, 1), amount=already_paid_amount))
         expected_amount_due = (self.policy.annual_premium - already_paid_amount) / 9
 
-        result = pa.change_policy(schedule='Monthly', date_cursor=date(2015, 3, 1))
+        result = self.pa.change_policy(schedule='Monthly', date_cursor=date(2015, 3, 1))
+
+        self.pa.make_invoices.assert_called_with(True, 9)
 
         invoices = Invoice.query.filter_by(policy_id=self.policy.id) \
             .filter(Invoice.deleted != True) \
             .order_by(Invoice.bill_date).all()
-
         total_invoices_for_the_policy = 9
-        self.assertEqual(total_invoices_for_the_policy, len(invoices))
 
+        self.assertEqual(total_invoices_for_the_policy, len(invoices))
         invoice_count = 0
         for invoice in filter(lambda x: x.bill_date >= date(2015, 3, 1) or x.deleted == True, invoices):
             invoice_count += 1
@@ -285,11 +277,9 @@ class TestChangingPolicy(unittest.TestCase):
         self.assertEqual(number_of_invoices_with_new_price, invoice_count)
 
     def test_Given_policy_When_policy_is_changed_Then_data_is_consistent(self):
-        self.policy.billing_schedule = 'Quarterly'
-        pa = PolicyAccounting(self.policy.id)
+        result = self.pa.change_policy(schedule='Monthly', date_cursor=date(2015, 3, 1))
 
-        result = pa.change_policy(schedule='Monthly', date_cursor=date(2015, 3, 1))
-
+        self.pa.make_invoices.assert_called_with(True, 9)
         self.assertEqual(self.test_insured.id, result.named_insured)
         self.assertEqual(self.test_agent.id, result.agent)
         self.assertEqual('Monthly', self.policy.billing_schedule)
