@@ -45,10 +45,7 @@ var indexViewModel = new IndexViewModel();
 ko.applyBindings(indexViewModel,document.body);
 
 function find_data(policy,dateTo) {
-
-    const Http = new XMLHttpRequest();
     url='http://localhost:5000/' + policy  +'/'+ dateTo
-
     $.get(url, function(data) {
     $("#showresults").html(data);
     });
